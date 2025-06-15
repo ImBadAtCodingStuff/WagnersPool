@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dish Soap Pool Cleaner</title>
+    <!-- Tailwind CSS for basic styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #e2e8f0; /* Light gray background */
+            overflow: hidden; /* Prevent scrolling if canvas is larger than viewport */
+        }
+        canvas {
+            background-color: #63b3ed; /* Pool water blue */
+            border-radius: 1rem; /* Rounded corners for the pool */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            touch-action: none; /* Prevent browser touch gestures like pull-to-refresh */
+            cursor: crosshair; /* Indicate drawing mode */
+        }
+        .message-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 10, 0, 0.04);
+            text-align: center;
+            z-index: 1000;
+            display: none; /* Hidden by default */
+        }
+        .message-box button {
+            background-color: #38a169; /* Green button */
+            color: white;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: bold;
+            transition: background-color 0.2s;
+            cursor: pointer;
+            margin-top: 1rem;
+        }
+        .message-box button:hover {
+            background-color: #2f855a;
+        }
+    </style>
+</head>
+<body class="bg-gray-200 flex flex-col justify-center items-center p-4">
+    <div class="text-center mb-4">
+        <h1 class="text-4xl font-bold text-gray-800">Dish Soap Pool Cleaner</h1>
+        <p class="text-xl text-gray-600">Click or Drag to clean the dust!</p>
+        <div class="mt-2 text-2xl font-semibold text-gray-700">Dust Cleared: <span id="score">0</span></div>
+    </div>
+
+    <canvas id="gameCanvas" class="w-full max-w-4xl aspect-square"></canvas>
+
+    <div id="messageBox" class="message-box">
+        <h2 class="text-3xl font-bold text-gray-800 mb-4">Game Over!</h2>
+        <p class="text-xl text-gray-700 mb-4">You cleared all the dust!</p>
+        <button id="restartButton">Play Again</button>
+    </div>
+
+    <script type="module">
+        // Get the canvas element and its 2D rendering context
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score');
+        const messageBox = document.getElementById('messageBox');
+        const restartButton = document.getElementById('restartButton');
+
+        // Game state variables
+        let dustParticles = [];
+        let score = 0;
+        let gameOver = false;
+        let activeRipples = []; // Array to store active ripple effects
+
+        // Drawing state variables for the line interaction
+        let isDrawing = false;
+        let drawnPath = []; // Stores points of the line drawn by the user
+
+        // Pool and Filter dimensions (for a square pool)
+        const poolSize = 600; // Will be scaled by CSS, but logical size for physics
+        const dustSpawnAreaPadding = 50; // Dust won't spawn too close to edges
+        const filterWidth = 80;
+        const filterHeight = 40;
+        const filterMarginTop = 20; // Filter at the top
+        const filterMarginRight = 20; // Still align to the right
+
+        // Ripple effect parameters
+        const rippleRadius = poolSize * 0.5; // Half of the pool size
+        const rippleMaxStrength = 0.008; // Initial max strength of the push - FURTHER DECREASED for very slow spread
+        const rippleDuration = 2000; // Increased duration to make the fade even less dramatic and longer
+        const friction = 0.98; // Reduces particle velocity over time
+
+        // Filter pull parameters
+        const filterPullRadius = 150; // Radius around the filter where it pulls dust
+        const filterPullStrength = 0.005; // How strongly the filter pulls dust (very gentle)
+
+        // Line drawing parameters
+        const minDistanceForLinePoint = 5; // Minimum distance between points to add to drawnPath
+        const numRipplesPerLine = 10; // Number of ripples to generate along a drawn line (for lines longer than a click)
+
+        // Game initialization function
+        function initGame() {
+            // Set canvas logical dimensions (important for drawing and physics)
+            canvas.width = poolSize;
+            canvas.height = poolSize;
+
+            dustParticles = [];
+            score = 0;
+            gameOver = false;
+            activeRipples = []; // Clear active ripples on restart
+            isDrawing = false;
+            drawnPath = [];
+            scoreDisplay.textContent = score;
+            messageBox.style.display = 'none';
+
+            // Spawn initial dust particles
+            spawnDustParticles(50); // Start with 50 dust particles
+        }
+
+        // Function to spawn dust particles randomly within the pool
+        function spawnDustParticles(count) {
+            // Adjust spawn area to avoid the top where the filter is
+            const spawnMinY = filterHeight + filterMarginTop + 50; // Spawn below filter area
+            const spawnMaxY = poolSize - dustSpawnAreaPadding;
+
+            for (let i = 0; i < count; i++) {
+                // Random width and height for non-perfect squares
+                const width = Math.random() * (15 - 8) + 8; // Between 8 and 15 pixels
+                const height = Math.random() * (15 - 8) + 8; // Between 8 and 15 pixels
+
+                dustParticles.push({
+                    x: Math.random() * (poolSize - 2 * dustSpawnAreaPadding) + dustSpawnAreaPadding,
+                    y: Math.random() * (spawnMaxY - spawnMinY) + spawnMinY, // Adjusted Y spawn range
+                    width: width,
+                    height: height,
+                    // Use a max radius for simplified circular collision
+                    collisionRadius: Math.max(width, height) / 2,
+                    rotation: Math.random() * Math.PI * 2, // Random initial rotation in radians (0 to 2*PI)
+                    // Slightly varied brown colors with different opacities
+                    color: `rgba(139, 69, 19, ${Math.random() * 0.4 + 0.4})`,
+                    vx: 0, // Velocity X
+                    vy: 0, // Velocity Y
+                    mass: 1, // Simple mass for force calculation (can be varied for different dust types)
+                });
+            }
+        }
+
+        // Get filter position and center
+        function getFilterRect() {
+            return {
+                x: poolSize - filterWidth - filterMarginRight, // Still aligned right
+                y: filterMarginTop, // Now at the top
+                width: filterWidth,
+                height: filterHeight,
+                centerX: poolSize - filterWidth - filterMarginRight + filterWidth / 2,
+                centerY: filterMarginTop + filterHeight / 2
+            };
+        }
+
+        // Drawing functions
+        function drawPool() {
+            // The canvas background color already serves as the pool water.
+            // If you later add a background image, this function would draw it.
+        }
+
+        function drawDustParticles() {
+            dustParticles.forEach(particle => {
+                ctx.save(); // Save the current canvas state (important for transformations)
+
+                // Translate to the particle's center before rotating
+                ctx.translate(particle.x, particle.y);
+                ctx.rotate(particle.rotation); // Apply rotation
+
+                ctx.fillStyle = particle.color;
+                // Draw rectangle centered at (0,0) which is now the particle's (x,y)
+                ctx.fillRect(-particle.width / 2, -particle.height / 2, particle.width, particle.height);
+
+                ctx.restore(); // Restore the canvas state (undo translate and rotate)
+            });
+        }
+
+        function drawFilter() {
+            const filterRect = getFilterRect();
+            ctx.fillStyle = '#4a5568'; // Dark gray for filter
+            ctx.fillRect(filterRect.x, filterRect.y, filterRect.width, filterRect.height);
+            ctx.strokeStyle = '#2d3748'; // Even darker outline
+            ctx.lineWidth = 2;
+            ctx.strokeRect(filterRect.x, filterRect.y, filterRect.width, filterRect.height);
+        }
+
+        // Draw the line currently being drawn by the user
+        function drawDrawnPath() {
+            if (isDrawing && drawnPath.length >= 1) { // Only draw if drawing is active and path exists
+                ctx.beginPath();
+                ctx.moveTo(drawnPath[0].x, drawnPath[0].y);
+                for (let i = 1; i < drawnPath.length; i++) {
+                    ctx.lineTo(drawnPath[i].x, drawnPath[i].y);
+                }
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)'; // White, semi-transparent line
+                ctx.lineWidth = 5;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+                ctx.closePath();
+            }
+        }
+
+        // --- Collision Detection and Response (Particle-Particle) ---
+        function checkParticleCollisions() {
+            for (let i = 0; i < dustParticles.length; i++) {
+                for (let j = i + 1; j < dustParticles.length; j++) {
+                    const p1 = dustParticles[i];
+                    const p2 = dustParticles[j];
+
+                    const dx = p2.x - p1.x;
+                    const dy = p2.y - p1.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    const minDistance = p1.collisionRadius + p2.collisionRadius;
+
+                    if (distance < minDistance) {
+                        // Collision detected! Resolve overlap and apply impulse
+
+                        // 1. Resolve overlap (push particles apart)
+                        const overlap = minDistance - distance;
+                        const normalX = dx / distance;
+                        const normalY = dy / distance;
+
+                        // Move particles proportional to their mass (or evenly if mass is same)
+                        const totalMass = p1.mass + p2.mass;
+                        const moveAmount1 = overlap / 2; // For equal masses
+                        const moveAmount2 = overlap / 2;
+
+                        p1.x -= normalX * moveAmount1;
+                        p1.y -= normalY * moveAmount1;
+                        p2.x += normalX * moveAmount2;
+                        p2.y += normalY * moveAmount2;
+
+                        // 2. Apply impulse (simple elastic collision response)
+                        // Vector from p1 to p2
+                        const collisionNormal = { x: normalX, y: normalY };
+                        // Relative velocity
+                        const relativeVelocity = { x: p2.vx - p1.vx, y: p2.vy - p1.vy };
+                        // Relative velocity in terms of the normal direction
+                        const speedAlongNormal = relativeVelocity.x * collisionNormal.x + relativeVelocity.y * collisionNormal.y;
+
+                        // Do not resolve if velocities are separating
+                        if (speedAlongNormal > 0) continue;
+
+                        const elasticity = 0.8; // How much energy is retained (0 = inelastic, 1 = perfectly elastic)
+                        const impulse = -(1 + elasticity) * speedAlongNormal / (1 / p1.mass + 1 / p2.mass);
+
+                        const impulseX = impulse * collisionNormal.x;
+                        const impulseY = impulse * collisionNormal.y;
+
+                        p1.vx -= impulseX / p1.mass;
+                        p1.vy -= impulseY / p1.mass;
+                        p2.vx += impulseX / p2.mass;
+                        p2.vy += impulseY / p2.mass;
+                    }
+                }
+            }
+        }
+        // --- End Collision Detection ---
+
+
+        // Game logic updates
+        function updateDustParticles(deltaTime) {
+            const filterRect = getFilterRect();
+
+            // Apply filter pull force
+            dustParticles.forEach(particle => {
+                const dx = filterRect.centerX - particle.x;
+                const dy = filterRect.centerY - particle.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < filterPullRadius && distance > particle.collisionRadius) { // Avoid division by zero or too strong force when inside
+                    // Normalize direction vector
+                    const nx = dx / distance;
+                    const ny = dy / distance;
+
+                    // Apply a gentle pull force
+                    particle.vx += nx * filterPullStrength;
+                    particle.vy += ny * filterPullStrength;
+                }
+            });
+
+            // Apply particle-particle collisions
+            checkParticleCollisions();
+
+            // Update dust particle positions and apply friction
+            dustParticles.forEach(particle => {
+                particle.vx *= friction;
+                particle.vy *= friction;
+
+                particle.x += particle.vx * deltaTime;
+                particle.y += particle.vy * deltaTime;
+
+                // Boundary collision (simple square bounce using particle dimensions)
+                // Use collisionRadius for consistent boundary check
+                const boundX = particle.collisionRadius;
+                const boundY = particle.collisionRadius;
+
+                // Left wall
+                if (particle.x - boundX < 0) {
+                    particle.x = boundX;
+                    particle.vx *= -0.6; // Bounce with some energy loss
+                }
+                // Right wall
+                if (particle.x + boundX > poolSize) {
+                    particle.x = poolSize - boundX;
+                    particle.vx *= -0.6;
+                }
+                // Top wall
+                if (particle.y - boundY < 0) {
+                    particle.y = boundY;
+                    particle.vy *= -0.6;
+                }
+                // Bottom wall
+                if (particle.y + boundY > poolSize) {
+                    particle.y = poolSize - boundY;
+                    particle.vy *= -0.6;
+                }
+            });
+
+            // Filter out particles that have entered the filter
+            dustParticles = dustParticles.filter(particle => {
+                // Check if the center of the particle is within the filter rectangle
+                if (particle.x > filterRect.x &&
+                    particle.x < filterRect.x + filterRect.width &&
+                    particle.y > filterRect.y &&
+                    particle.y < filterRect.y + filterRect.height) {
+                    score++; // Increment score
+                    scoreDisplay.textContent = score;
+                    return false; // Remove particle
+                }
+                return true; // Keep particle
+            });
+
+            // Check for game over
+            if (dustParticles.length === 0 && !gameOver) {
+                gameOver = true;
+                messageBox.style.display = 'block';
+            }
+        }
+
+        // Update active ripples and apply their forces
+        function updateRipples(currentTime) {
+            // Filter out expired ripples
+            activeRipples = activeRipples.filter(ripple => {
+                const age = currentTime - ripple.startTime;
+                return age < ripple.duration;
+            });
+
+            activeRipples.forEach(ripple => {
+                const age = currentTime - ripple.startTime;
+                // Calculate current strength based on age (linear decay for a less dramatic fade)
+                const currentStrength = ripple.maxStrength * (1 - (age / ripple.duration));
+
+                dustParticles.forEach(particle => {
+                    const dx = particle.x - ripple.x;
+                    const dy = particle.y - ripple.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < rippleRadius && distance > 0) {
+                        // Calculate force direction (away from ripple center)
+                        const angle = Math.atan2(dy, dx);
+                        // Force magnitude also decreases with distance from ripple center
+                        // Using a linear falloff for distance for a less dramatic effect
+                        const falloff = 1 - (distance / rippleRadius);
+                        const forceMagnitude = currentStrength * falloff;
+
+                        // Apply force to particle's velocity
+                        particle.vx += Math.cos(angle) * forceMagnitude / particle.mass;
+                        particle.vy += Math.sin(angle) * forceMagnitude / particle.mass;
+                    }
+                });
+            });
+        }
+
+        // Helper to get canvas coordinates from event
+        function getCanvasCoords(event) {
+            const rect = canvas.getBoundingClientRect();
+            let clientX, clientY;
+
+            if (event.touches) {
+                clientX = event.touches[0].clientX;
+                clientY = event.touches[0].clientY;
+            } else {
+                clientX = event.clientX;
+                clientY = event.clientY;
+            }
+
+            return {
+                x: (clientX - rect.left) / (rect.right - rect.left) * canvas.width,
+                y: (clientY - rect.top) / (rect.bottom - rect.top) * canvas.height
+            };
+        }
+
+        // Handle mouse/touch down to start drawing
+        function handleStart(event) {
+            if (gameOver) return;
+            isDrawing = true;
+            drawnPath = [getCanvasCoords(event)];
+            event.preventDefault(); // Prevent scrolling on touch devices
+        }
+
+        // Handle mouse/touch move to continue drawing
+        function handleMove(event) {
+            if (!isDrawing) return;
+
+            const currentCoords = getCanvasCoords(event);
+            const lastPoint = drawnPath[drawnPath.length - 1];
+
+            // Only add point if it's sufficiently far from the last one
+            const dx = currentCoords.x - lastPoint.x;
+            const dy = currentCoords.y - lastPoint.y;
+            if (Math.sqrt(dx * dx + dy * dy) > minDistanceForLinePoint) {
+                drawnPath.push(currentCoords);
+            }
+            event.preventDefault(); // Prevent scrolling on touch devices
+        }
+
+        // Handle mouse/touch up to finish drawing and apply effect
+        function handleEnd(event) {
+            if (!isDrawing) return;
+            isDrawing = false;
+
+            // If a single point was clicked (no significant drag), add one ripple at that point.
+            // If a line was drawn, generate ripples along the path.
+            if (drawnPath.length >= 1) {
+                // Determine if it was a click (very short drag) or a line
+                const startPoint = drawnPath[0];
+                const endPoint = drawnPath[drawnPath.length - 1];
+                const distanceOfDrag = Math.sqrt(Math.pow(endPoint.x - startPoint.x, 2) + Math.pow(endPoint.y - startPoint.y, 2));
+
+                if (distanceOfDrag < minDistanceForLinePoint * 2 && drawnPath.length <= 2) { // Treat as a click
+                    activeRipples.push({
+                        x: drawnPath[0].x,
+                        y: drawnPath[0].y,
+                        startTime: performance.now(),
+                        duration: rippleDuration,
+                        maxStrength: rippleMaxStrength
+                    });
+                } else { // Line was drawn
+                    const pathLength = drawnPath.length;
+                    for (let i = 0; i < numRipplesPerLine; i++) {
+                        // Ensure index calculation is safe for short paths
+                        const index = pathLength > 1 ? Math.floor(i / (numRipplesPerLine - 1) * (pathLength - 1)) : 0;
+                        const point = drawnPath[index];
+
+                        activeRipples.push({
+                            x: point.x,
+                            y: point.y,
+                            startTime: performance.now(),
+                            duration: rippleDuration,
+                            maxStrength: rippleMaxStrength
+                        });
+                    }
+                }
+            }
+            drawnPath = []; // Clear the drawn path
+            event.preventDefault(); // Prevent scrolling on touch devices
+        }
+
+
+        // Game loop
+        let lastTime = 0;
+        function gameLoop(currentTime) {
+            if (!lastTime) lastTime = currentTime;
+            const deltaTime = (currentTime - lastTime) / 1000; // Convert to seconds
+            lastTime = currentTime;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
+
+            drawPool();
+            drawFilter();
+            updateRipples(currentTime); // Update and apply forces from active ripples
+            updateDustParticles(deltaTime * 60); // Scale deltaTime for consistent speed
+            drawDustParticles();
+            drawDrawnPath(); // Draw the line as it's being drawn
+
+            if (!gameOver) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // Event listeners for drawing
+        canvas.addEventListener('mousedown', handleStart);
+        canvas.addEventListener('mousemove', handleMove);
+        canvas.addEventListener('mouseup', handleEnd);
+        canvas.addEventListener('mouseleave', handleEnd); // End drawing if mouse leaves canvas
+
+        canvas.addEventListener('touchstart', handleStart, { passive: false });
+        canvas.addEventListener('touchmove', handleMove, { passive: false });
+        canvas.addEventListener('touchend', handleEnd, { passive: false });
+        canvas.addEventListener('touchcancel', handleEnd, { passive: false }); // End drawing if touch is cancelled
+
+        restartButton.addEventListener('click', () => {
+            initGame();
+            requestAnimationFrame(gameLoop);
+        });
+
+        // Start the game when the window loads
+        window.onload = function() {
+            initGame();
+            requestAnimationFrame(gameLoop);
+        };
+
+        // Handle window resizing (optional, but good for responsiveness)
+        window.addEventListener('resize', () => {
+            // Re-evaluating canvas size might be necessary for more complex responsiveness
+        });
+
+    </script>
+</body>
+</html>
